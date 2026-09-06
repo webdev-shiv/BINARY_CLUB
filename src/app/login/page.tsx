@@ -38,6 +38,9 @@ export default function Login() {
       if (authErr) {
         setError(authErr.message || "Invalid username/email or password. Please try again.");
       } else {
+        if (typeof window !== "undefined") {
+          localStorage.setItem("user_login_email", targetEmail);
+        }
         router.replace("/dashboard");
       }
     } catch (err: unknown) {

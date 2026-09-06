@@ -1,7 +1,7 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { LayoutDashboard, Users, Upload, Download, LogOut } from "lucide-react";
+import { LayoutDashboard, Users, Upload, Download, LogOut, User } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -15,12 +15,42 @@ const links = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const router = useRouter();
+  const [userEmail, setUserEmail] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/auth/ensure-profile").catch(() => {});
+    // Check localStorage cache first for immediate display
+    const cached = typeof window !== "undefined" ? localStorage.getItem("user_login_email") : null;
+    if (cached) setUserEmail(cached);
+
+    const loadUser = async () => {
+      try {
+        const { data: { user } } = await createClient().auth.getUser();
+        if (user?.email) {
+          setUserEmail(user.email);
+          localStorage.setItem("user_login_email", user.email);
+          return;
+        }
+
+        const res = await fetch("/api/auth/ensure-profile");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.profile?.full_name) {
+            const display = `${data.profile.full_name}`;
+            setUserEmail(display);
+            localStorage.setItem("user_login_email", display);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+    loadUser();
   }, []);
 
   const logout = async () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("user_login_email");
+    }
     await createClient().auth.signOut();
     router.push("/login");
   };
@@ -73,8 +103,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="p-1 rounded-lg bg-white border border-slate-200 shadow-sm flex items-center justify-center">
               <img src="/binary-logo.svg" alt="Binary Club Recruitment" className="h-6 w-6 object-contain" />
             </div>
-            <div>
+            <div className="flex flex-wrap items-center gap-2 md:gap-3">
               <span className="font-extrabold text-[var(--heading)] text-base tracking-tight">Binary Club Recruitment</span>
+              {userEmail && (
+                <div className="flex items-center gap-1.5 rounded-full bg-[var(--btn-ghost-bg)] px-3 py-1 text-xs font-semibold text-[var(--heading)] border border-[var(--line)] shadow-xs">
+                  <User size={13} className="text-[var(--btn-primary-bg)]" />
+                  <span>{userEmail}</span>
+                </div>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-3">

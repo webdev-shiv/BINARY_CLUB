@@ -2,21 +2,60 @@
 create extension if not exists "pgcrypto";
 create type public.app_role as enum ('ADMIN','INTERVIEWER','TECHNICAL_EVALUATOR','COORDINATOR');
 create type public.recommendation as enum ('PENDING','SELECTED','GOOD','BORDERLINE','REJECTED');
-create table public.profiles (id uuid primary key references auth.users(id) on delete cascade, full_name text not null default '', role app_role not null default 'INTERVIEWER', is_active boolean not null default true, last_active_at timestamptz, created_at timestamptz not null default now());
-create table public.candidates (id uuid primary key default gen_random_uuid(), student_id text unique, roll_number text unique, name text not null, email text unique, phone text, branch text, section text, year text, domain text, additional_data jsonb not null default '{}'::jsonb, recommendation recommendation not null default 'PENDING', final_score numeric(4,2), rank integer, updated_at timestamptz not null default now(), created_at timestamptz not null default now());
-create table public.candidate_links (id uuid primary key default gen_random_uuid(), candidate_id uuid not null references public.candidates(id) on delete cascade, link_type text not null, url text not null check (url ~* '^https?://'), unique(candidate_id,link_type));
-create table public.evaluations (id uuid primary key default gen_random_uuid(), candidate_id uuid not null unique references public.candidates(id) on delete cascade, evaluator_id uuid references public.profiles(id), technical_score numeric(4,2) check(technical_score between 0 and 10), public_speaking_score numeric(4,2) check(public_speaking_score between 0 and 10), projects_score numeric(4,2) check(projects_score between 0 and 10), overall_score numeric(4,2) check(overall_score between 0 and 10), general_remarks text, technical_remarks text, interview_remarks text, version integer not null default 1, updated_at timestamptz not null default now(), created_at timestamptz not null default now());
-create table public.audit_logs (id uuid primary key default gen_random_uuid(), actor_id uuid references public.profiles(id), candidate_id uuid references public.candidates(id) on delete set null, action text not null, field text, previous_value text, new_value text, created_at timestamptz not null default now());
-create table public.sync_logs (id uuid primary key default gen_random_uuid(), status text not null check(status in ('PENDING','SYNCED','FAILED')), message text, candidate_id uuid references public.candidates(id) on delete cascade, attempts int not null default 0, created_at timestamptz not null default now());
-create index candidate_filter_idx on public.candidates(branch,section,domain,recommendation,final_score desc); create index candidate_search_idx on public.candidates(email,roll_number,student_id);
+create table if not exists public.profiles (id uuid primary key references auth.users(id) on delete cascade, full_name text not null default '', role app_role not null default 'INTERVIEWER', is_active boolean not null default true, last_active_at timestamptz, created_at timestamptz not null default now());
+create table if not exists public.candidates (id uuid primary key default gen_random_uuid(), student_id text unique, roll_number text unique, name text not null, email text unique, phone text, branch text, section text, year text, domain text, additional_data jsonb not null default '{}'::jsonb, recommendation recommendation not null default 'PENDING', final_score numeric(4,2), rank integer, updated_at timestamptz not null default now(), created_at timestamptz not null default now());
+create table if not exists public.candidate_links (id uuid primary key default gen_random_uuid(), candidate_id uuid not null references public.candidates(id) on delete cascade, link_type text not null, url text not null check (url ~* '^https?://'), unique(candidate_id,link_type));
+create table if not exists public.evaluations (id uuid primary key default gen_random_uuid(), candidate_id uuid not null unique references public.candidates(id) on delete cascade, evaluator_id uuid references public.profiles(id), technical_score numeric(4,2) check(technical_score between 0 and 10), public_speaking_score numeric(4,2) check(public_speaking_score between 0 and 10), projects_score numeric(4,2) check(projects_score between 0 and 10), overall_score numeric(4,2) check(overall_score between 0 and 10), general_remarks text, technical_remarks text, interview_remarks text, version integer not null default 1, updated_at timestamptz not null default now(), created_at timestamptz not null default now());
+create table if not exists public.audit_logs (id uuid primary key default gen_random_uuid(), actor_id uuid references public.profiles(id), candidate_id uuid references public.candidates(id) on delete set null, action text not null, field text, previous_value text, new_value text, created_at timestamptz not null default now());
+create table if not exists public.sync_logs (id uuid primary key default gen_random_uuid(), status text not null check(status in ('PENDING','SYNCED','FAILED')), message text, candidate_id uuid references public.candidates(id) on delete cascade, attempts int not null default 0, created_at timestamptz not null default now());
+
+create index if not exists candidate_filter_idx on public.candidates(branch,section,domain,recommendation,final_score desc); 
+create index if not exists candidate_search_idx on public.candidates(email,roll_number,student_id);
+
 create or replace function public.is_active_role(required app_role[] default array['ADMIN','INTERVIEWER','TECHNICAL_EVALUATOR','COORDINATOR']::app_role[]) returns boolean language sql stable security definer set search_path=public as $$select exists(select 1 from profiles where id=auth.uid() and is_active and role=any(required))$$;
+
 create or replace function public.recompute_scores() returns trigger language plpgsql security definer set search_path=public as $$begin update candidates set final_score=round(((new.technical_score+new.public_speaking_score+new.projects_score+new.overall_score)/4)::numeric,2),updated_at=now() where id=new.candidate_id; with ordered as (select id,row_number() over(order by final_score desc nulls last, (select technical_score from evaluations where candidate_id=candidates.id) desc nulls last,(select projects_score from evaluations where candidate_id=candidates.id) desc nulls last,(select public_speaking_score from evaluations where candidate_id=candidates.id) desc nulls last,student_id) as r from candidates) update candidates c set rank=o.r from ordered o where c.id=o.id; insert into sync_logs(status,candidate_id,message) values('PENDING',new.candidate_id,'Evaluation changed'); return new; end $$;
+
 create or replace function public.prepare_evaluation() returns trigger language plpgsql security definer set search_path=public as $$begin new.evaluator_id=auth.uid();new.updated_at=now();new.version=coalesce(old.version,0)+1;return new;end $$;
-create trigger evaluation_prepare before insert or update on public.evaluations for each row execute function public.prepare_evaluation(); create trigger evaluation_score after insert or update on public.evaluations for each row execute function public.recompute_scores();
-alter table public.profiles enable row level security;alter table public.candidates enable row level security;alter table public.candidate_links enable row level security;alter table public.evaluations enable row level security;alter table public.audit_logs enable row level security;alter table public.sync_logs enable row level security;
-create policy "authenticated read candidates" on candidates for select using(public.is_active_role()); create policy "admins manage candidates" on candidates for all using(public.is_active_role(array['ADMIN']::app_role[])) with check(public.is_active_role(array['ADMIN']::app_role[])); create policy "authenticated links" on candidate_links for select using(public.is_active_role()); create policy "read evaluations" on evaluations for select using(public.is_active_role()); create policy "authorized evaluations" on evaluations for insert with check(public.is_active_role(array['ADMIN','INTERVIEWER','TECHNICAL_EVALUATOR']::app_role[])); create policy "edit own evaluations" on evaluations for update using(evaluator_id=auth.uid() or public.is_active_role(array['ADMIN']::app_role[])); create policy "admin profiles" on profiles for all using(public.is_active_role(array['ADMIN']::app_role[])); create policy "own profile" on profiles for select using(id=auth.uid()); create policy "admin audit" on audit_logs for select using(public.is_active_role(array['ADMIN']::app_role[]));
+
+drop trigger if exists evaluation_prepare on public.evaluations;
+create trigger evaluation_prepare before insert or update on public.evaluations for each row execute function public.prepare_evaluation(); 
+
+drop trigger if exists evaluation_score on public.evaluations;
+create trigger evaluation_score after insert or update on public.evaluations for each row execute function public.recompute_scores();
+
+alter table public.profiles enable row level security;
+alter table public.candidates enable row level security;
+alter table public.candidate_links enable row level security;
+alter table public.evaluations enable row level security;
+alter table public.audit_logs enable row level security;
+alter table public.sync_logs enable row level security;
+
+-- Drop restrictive read policies
+drop policy if exists "authenticated read candidates" on candidates;
+drop policy if exists "allow read candidates" on candidates;
+drop policy if exists "authenticated links" on candidate_links;
+drop policy if exists "allow read links" on candidate_links;
+drop policy if exists "read evaluations" on evaluations;
+drop policy if exists "allow read evaluations" on evaluations;
+drop policy if exists "own profile" on profiles;
+
+-- Allow SELECT for reading candidates, candidate_links, and evaluations
+create policy "allow read candidates" on candidates for select using (true);
+create policy "allow read links" on candidate_links for select using (true);
+create policy "allow read evaluations" on evaluations for select using (true);
+create policy "allow read profiles" on profiles for select using (true);
+
+-- Admin mutation policies
+create policy "admins manage candidates" on candidates for all using(public.is_active_role(array['ADMIN']::app_role[])) with check(public.is_active_role(array['ADMIN']::app_role[]));
+create policy "authorized evaluations" on evaluations for insert with check(public.is_active_role(array['ADMIN','INTERVIEWER','TECHNICAL_EVALUATOR']::app_role[]));
+create policy "edit own evaluations" on evaluations for update using(evaluator_id=auth.uid() or public.is_active_role(array['ADMIN']::app_role[]));
+create policy "admin profiles" on profiles for all using(public.is_active_role(array['ADMIN']::app_role[]));
+
+-- Enable Realtime
 alter publication supabase_realtime add table public.candidates,public.evaluations,public.candidate_links;
 
 create or replace function public.handle_new_user() returns trigger language plpgsql security definer set search_path = public as $$ begin insert into public.profiles (id, full_name, role, is_active) values (new.id, coalesce(new.raw_user_meta_data->>'full_name', split_part(new.email, '@', 1)), 'INTERVIEWER', true) on conflict (id) do update set is_active = true; return new; end; $$;
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users for each row execute function public.handle_new_user();
+

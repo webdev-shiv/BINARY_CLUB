@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Search, ExternalLink, ChevronLeft, ChevronRight, UserPlus, Trash2, AlertTriangle, Download } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -105,6 +105,11 @@ export function CandidateTable() {
     setLoading(false);
   };
 
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  });
+
   useEffect(() => {
     const timer = setTimeout(load, 250);
     return () => clearTimeout(timer);
@@ -113,9 +118,9 @@ export function CandidateTable() {
   useEffect(() => {
     const channel = supabase
       .channel("candidate-table-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "candidates" }, load)
-      .on("postgres_changes", { event: "*", schema: "public", table: "evaluations" }, load)
-      .on("postgres_changes", { event: "*", schema: "public", table: "candidate_links" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "candidates" }, () => loadRef.current())
+      .on("postgres_changes", { event: "*", schema: "public", table: "evaluations" }, () => loadRef.current())
+      .on("postgres_changes", { event: "*", schema: "public", table: "candidate_links" }, () => loadRef.current())
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
